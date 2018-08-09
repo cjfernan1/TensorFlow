@@ -9,7 +9,9 @@
         .contador{
             font-size: 15px;
         }
-
+        .js-title-step{
+            color:white;
+        }
         .container_chat {
             margin-top: 70px;
             text-align: center;
