@@ -64,6 +64,11 @@
             background-color: rgba(6, 179, 251, 0.9);
             border-color: rgba(6, 179, 251, 0.9);
         }
+        .btn-warning.disabled, .btn-warning[disabled], fieldset[disabled] .btn-warning, .btn-warning.disabled:hover, .btn-warning[disabled]:hover, fieldset[disabled] .btn-warning:hover, .btn-warning.disabled:focus, .btn-warning[disabled]:focus, fieldset[disabled] .btn-warning:focus, .btn-warning.disabled.focus, .btn-warning[disabled].focus, fieldset[disabled] .btn-warning.focus, .btn-warning.disabled:active, .btn-warning[disabled]:active, fieldset[disabled] .btn-warning:active, .btn-warning.disabled.active, .btn-warning[disabled].active, fieldset[disabled] .btn-warning.active 
+        {
+            background-color: rgba(6, 179, 251, 0.9);;
+            border-color: rgba(6, 179, 251, 0.9);;
+        }
         .btn-success {
             color: #ffffff;
             background-color: rgba(0, 159, 227, 0.9);
