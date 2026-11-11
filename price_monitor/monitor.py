@@ -5,6 +5,7 @@ Uso:
     python monitor.py match [--reelegir "texto"]   # empareja productos de la hoja
     python monitor.py run [--dry-run]               # consulta precios y envía alertas
     python monitor.py report                        # tabla comparativa en consola
+    python monitor.py diagnostico "pony malta"      # qué responde cada tienda
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import csv
 import io
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -20,7 +22,7 @@ import requests
 import yaml
 
 import alerts as al
-from matcher import Intent, MatchResult, Scored, match, search_with_fallback
+from matcher import Intent, MatchResult, Scored, match, rank, search_with_fallback
 from storage import Storage
 from stores import STORES, ProductSnapshot, VtexStore
 from units import Quantity, price_per_reference, reference_label, strip_accents
@@ -33,8 +35,8 @@ DEFAULTS = {
     "sheet_local_csv": "productos.csv",
     "db_path": "precios.db",
     "log_path": "monitor.log",
-    "stores": {"exito": {"enabled": True, "sales_channel": ""},
-               "jumbo": {"enabled": True, "sales_channel": ""}},
+    "stores": {"exito": {"enabled": True, "sales_channel": "", "base_url": ""},
+               "jumbo": {"enabled": True, "sales_channel": "", "base_url": ""}},
     "request_delay_seconds": 1.5,
     "search_results": 20,
     "thresholds": {"drop_pct": 10, "cross_store_pct": 15, "discount_pct": 25,
@@ -202,7 +204,8 @@ def build_stores(cfg: dict) -> dict[str, VtexStore]:
     for key, sc in cfg["stores"].items():
         if sc.get("enabled", True):
             out[key] = VtexStore(key, sc.get("sales_channel") or None,
-                                 delay=cfg["request_delay_seconds"])
+                                 delay=cfg["request_delay_seconds"],
+                                 base_url=sc.get("base_url") or None)
     return out
 
 
@@ -213,7 +216,7 @@ def _fmt(sc: Scored) -> str:
     s = sc.snap
     ppu = f"{al.money(s.price_per_unit)}/{reference_label(s.quantity)}" if s.price_per_unit else ""
     extra = f" [{', '.join(sc.notes)}]" if sc.notes else ""
-    return f"{s.name} | {s.brand} | {s.presentation} | {al.money(s.price)} {ppu} (puntaje {sc.score:.0f}){extra}"
+    return f"{s.name} | {s.presentation} | {al.price_text(s)} | {ppu} (puntaje {sc.score:.0f}){extra}"
 
 
 def ask_choice(store: str, result: MatchResult, inp=input) -> Optional[Scored]:
@@ -241,30 +244,49 @@ def ask_choice(store: str, result: MatchResult, inp=input) -> Optional[Scored]:
 
 def resolve_product(query: str, stores: dict[str, VtexStore], db: Storage, n: int,
                     interactive: bool, force: bool = False, inp=input) -> str:
-    """Empareja un producto de la hoja. Devuelve el estado resultante."""
+    """Empareja un producto de la hoja. Devuelve el estado resultante.
+
+    Solo busca en las tiendas que aún no tienen emparejamiento; una tienda que
+    falla o bloquea la consulta se deja sin guardar para reintentarla luego.
+    """
     existing = db.get_matches(query)
-    if not force and existing and all(
-            existing.get(s) is not None and existing[s]["status"] != "pendiente" for s in stores):
+    todo = [k for k in stores if force or k not in existing or existing[k]["status"] == "pendiente"]
+    if not todo:
         return "ya_emparejado"
     intent = Intent.from_text(query)
-    results = {}
-    for key, store in stores.items():
+    results, failed = {}, []
+    for key in todo:
+        store = stores[key]
+        if getattr(store, "blocked", None):
+            failed.append(key)
+            continue
         try:
             results[key] = search_with_fallback(store, intent, n)
         except Exception as exc:
             log.error("Búsqueda '%s' en %s falló: %s", query, key, exc)
-            results[key] = []
+            failed.append(key)
+    if not results:
+        return "error_tienda" if failed else "no_encontrado"
     res = match(intent, results)
 
-    if res.method == "ninguno":
-        # sin resultados (o tiendas caídas): no se guarda nada y se reintenta la próxima vez
+    # Si otra tienda ya está emparejada, su código de barras manda
+    anchors = {existing[k]["ean"] for k in stores
+               if k not in todo and existing[k]["ean"] and existing[k]["status"] in ACTIVE}
+    if anchors:
+        for key in results:
+            hit = next((c for c in res.candidates[key] if c.snap.ean in anchors), None)
+            if hit:
+                res.chosen[key], res.method, res.confident = hit, "ean", True
+
+    if res.method == "ninguno" and not anchors:
+        # sin resultados: no se guarda nada y se reintenta la próxima vez
         log.warning("'%s' no se encontró en ninguna tienda", query)
         if interactive:
             print(f"\n✖ {query}: no se encontró en ninguna tienda (revisa el texto o monitor.log)")
         return "no_encontrado"
 
     if res.confident:
-        for key in stores:
+        for key in results:
             ch = res.chosen.get(key)
             if ch:
                 db.save_match(query, key, "auto", ch.snap, res.method, ch.score)
@@ -273,14 +295,14 @@ def resolve_product(query: str, stores: dict[str, VtexStore], db: Storage, n: in
         log.info("'%s' emparejado automáticamente (%s)", query, res.method)
         if interactive:
             print(f"\n✔ {query}  [{res.method}]")
-            for key in stores:
+            for key in results:
                 ch = res.chosen.get(key)
                 print(f"   {STORES[key]['name']}: {_fmt(ch) if ch else 'no disponible'}")
         return "auto"
 
     if interactive:
         print(f"\n? {query}: coincidencia dudosa ({res.method}). {' '.join(res.notes)}")
-        for key in stores:
+        for key in results:
             ch = ask_choice(key, res, inp)
             if ch:
                 db.save_match(query, key, "confirmado", ch.snap, "manual", ch.score)
@@ -288,12 +310,18 @@ def resolve_product(query: str, stores: dict[str, VtexStore], db: Storage, n: in
                 db.save_match(query, key, "no_existe", method="manual")
         return "confirmado"
 
-    for key in stores:
+    for key in results:
         ch = res.chosen.get(key)
         db.save_match(query, key, "pendiente", ch.snap if ch else None, res.method,
                       ch.score if ch else None)
     log.info("'%s' queda pendiente de confirmación", query)
     return "pendiente"
+
+
+def report_blocked(stores: dict) -> None:
+    for st in stores.values():
+        if getattr(st, "blocked", None):
+            print(f"\n⚠ {st.blocked}")
 
 
 def cmd_match(cfg, db, stores, rows, reelegir: Optional[str] = None, inp=input) -> dict:
@@ -308,11 +336,13 @@ def cmd_match(cfg, db, stores, rows, reelegir: Optional[str] = None, inp=input) 
         counts[st] = counts.get(st, 0) + 1
     names = {"auto": "emparejados automáticamente", "confirmado": "confirmados por ti",
              "pendiente": "pendientes", "no_encontrado": "no encontrados",
-             "ya_emparejado": "ya estaban emparejados"}
+             "ya_emparejado": "ya estaban emparejados",
+             "error_tienda": "sin respuesta de la tienda (se reintentará)"}
     if not targets:
         print("\nResumen: la hoja no tiene productos para emparejar (revisa el mensaje de arriba).")
     else:
         print("\nResumen:", ", ".join(f"{v} {names.get(k, k)}" for k, v in counts.items()))
+    report_blocked(stores)
     return counts
 
 
@@ -356,9 +386,14 @@ def cmd_run(cfg, db, stores, rows, notifier: al.Notifier, dry_run=False) -> list
                 db.add_price(query, snap)
                 db.set_base_price(query, key, snap)
             snaps[key] = snap
-            log.info("%s | %s | %s | %s", query, key, snap.name, al.money(snap.price))
+            log.info("%s | %s | %s | %s %s", query, key, snap.name, al.money(snap.price), snap.price_label)
         all_alerts += al.check_cross_store(query, snaps, th["cross_store_pct"])
 
+    for st in stores.values():
+        if getattr(st, "blocked", None):
+            all_alerts.append(al.Alert(
+                key=f"bloqueo:{st.key}:{datetime.now():%Y-%m-%d}",
+                title=f"⚠ {st.display} no respondió", message=st.blocked, kind="bloqueo"))
     if pending:
         all_alerts.append(al.Alert(
             key=f"pendiente:{'|'.join(sorted(pending))}",
@@ -393,15 +428,37 @@ def cmd_report(db: Storage, rows: list[dict] | None):
             pres = m["unit_qty"] and Quantity(m["unit_qty"], m["unit"]).label()
             price = last["price"] if last else None
             ppu = last["price_per_unit"] if last else None
+            cond = ""
+            if last and last["price_label"] and last["regular_price"] and last["regular_price"] != price:
+                cond = f" {last['price_label']} (normal {al.money(last['regular_price'])})"
             print(f"   {name:6} [{m['status']}] {m['name']} ({pres or '?'})"
-                  f"\n          actual {al.money(price)} | base {al.money(m['base_price'])}"
+                  f"\n          actual {al.money(price)}{cond} | base {al.money(m['base_price'])}"
                   f" | por unidad {al.money(ppu)}{'' if not last else ' · ' + last['ts'][:16]}")
+
+
+def cmd_diagnostico(stores: dict, text: str):
+    """Muestra qué responde cada tienda para un texto (para revisar problemas)."""
+    intent = Intent.from_text(text)
+    for key, st in stores.items():
+        print(f"\n== {st.display} ({st.base})")
+        try:
+            res = search_with_fallback(st, intent, 50)
+        except Exception as exc:
+            print(f"   ✖ {exc}")
+            continue
+        print(f"   {len(res)} resultado(s)")
+        for sc in rank(intent, res)[:5]:
+            print(f"   - {_fmt(sc)}")
+        if res and not rank(intent, res):
+            for snap in res[:5]:
+                print(f"   · {snap.name} | {snap.presentation} | {al.price_text(snap)}")
 
 
 # ---------------------------------------------------------------------------
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Monitor de precios Éxito / Jumbo")
-    ap.add_argument("comando", choices=["match", "run", "report"])
+    ap.add_argument("comando", choices=["match", "run", "report", "diagnostico"])
+    ap.add_argument("texto", nargs="?", help="texto a buscar (solo para 'diagnostico')")
     ap.add_argument("--config", default=str(HERE / "config.yaml"))
     ap.add_argument("--dry-run", action="store_true", help="no guarda precios ni envía notificaciones")
     ap.add_argument("--reelegir", help="vuelve a emparejar este producto")
@@ -425,6 +482,9 @@ def main(argv=None):
             except (SystemExit, requests.RequestException):
                 rows = None
             cmd_report(db, rows)
+            return
+        if args.comando == "diagnostico":
+            cmd_diagnostico(build_stores(cfg), args.texto or "pony malta 1 litro")
             return
         rows = read_sheet(cfg)
         stores = build_stores(cfg)

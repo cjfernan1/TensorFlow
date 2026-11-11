@@ -11,9 +11,11 @@ stores:
   exito:
     enabled: true
     sales_channel: ""   # canal de venta VTEX (sc); vacío = el predeterminado
+    base_url: ""        # vacío = https://www.exito.com
   jumbo:
     enabled: true
     sales_channel: ""
+    base_url: ""        # vacío = https://www.jumbocolombia.com
 
 request_delay_seconds: 1.5   # pausa entre peticiones a una misma tienda
 search_results: 20           # candidatos por búsqueda

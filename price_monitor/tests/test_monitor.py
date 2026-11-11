@@ -95,7 +95,7 @@ def test_cross_store_different_sizes_uses_unit_price():
     a = parse_vtex_product("exito", vtex_product("1", "a", "Queso Alpina 400 g", "Alpina", 20000),
                            "https://www.exito.com")[0]
     b = parse_vtex_product("jumbo", vtex_product("2", "b", "Queso Alpina 250 g", "Alpina", 10000),
-                           "https://www.tiendasjumbo.co")[0]
+                           "https://www.jumbocolombia.com")[0]
     [alert] = al.check_cross_store("queso", {"exito": a, "jumbo": b}, 15)
     # 50.000/kg vs 40.000/kg → Jumbo 20 % más barato
     assert "Jumbo" in alert.title and "20%" in alert.title
@@ -153,3 +153,20 @@ def test_read_sheet_cp1252(tmp_path, capsys):
 def test_report_empty(tmp_path, capsys):
     monitor.cmd_report(Storage(str(tmp_path / "p.db")), [])
     assert "No hay productos emparejados" in capsys.readouterr().out
+
+
+def test_blocked_store_is_retried_later(tmp_path):
+    from stores import StoreBlocked
+    db = Storage(str(tmp_path / "p.db"))
+    stores = _stores()
+
+    def blocked(*a, **k):
+        raise StoreBlocked("Éxito rechazó la consulta")
+    stores["exito"].search = blocked
+    st = monitor.resolve_product("pony malta 1 litro", stores, db, 20, interactive=False)
+    m = db.get_matches("pony malta 1 litro")
+    assert st == "auto" and m["jumbo"]["sku"] == "j1" and "exito" not in m
+    # cuando Éxito vuelve a responder, se empareja usando el EAN de Jumbo
+    stores["exito"] = FakeStore("exito", copy.deepcopy(EXITO))
+    assert monitor.resolve_product("pony malta 1 litro", stores, db, 20, interactive=False) == "auto"
+    assert db.get_matches("pony malta 1 litro")["exito"]["sku"] == "e1"

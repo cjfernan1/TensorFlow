@@ -1,4 +1,4 @@
-"""Clientes para Éxito y Tiendas Jumbo (ambas tiendas sobre VTEX)."""
+"""Clientes para Éxito y Jumbo Colombia (ambas tiendas sobre VTEX)."""
 from __future__ import annotations
 
 import json
@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 STORES = {
     "exito": {"name": "Éxito", "base": "https://www.exito.com"},
-    "jumbo": {"name": "Jumbo", "base": "https://www.tiendasjumbo.co"},
+    "jumbo": {"name": "Jumbo", "base": "https://www.jumbocolombia.com"},
 }
 
 HEADERS = {
@@ -33,6 +33,10 @@ class StoreError(RuntimeError):
     pass
 
 
+class StoreBlocked(StoreError):
+    """La tienda rechaza consultas automáticas (p. ej. página de Cloudflare)."""
+
+
 @dataclass
 class ProductSnapshot:
     store: str
@@ -42,9 +46,11 @@ class ProductSnapshot:
     name: str
     brand: str
     url: str
-    price: Optional[float]
-    list_price: Optional[float]
+    price: Optional[float]          # menor precio ofrecido (incluye tarjeta/promoción)
+    list_price: Optional[float]     # precio "antes" (tachado)
     available: bool
+    regular_price: Optional[float] = None   # precio sin tarjeta ni condiciones
+    price_label: str = ""                   # condición del menor precio, p. ej. "con tarjeta -20%"
     unit_qty: Optional[float] = None
     unit: Optional[str] = None
     price_per_unit: Optional[float] = None
@@ -71,6 +77,46 @@ def _to_float(v: Any) -> Optional[float]:
         return None
 
 
+def _lower_keys(obj: Any) -> Any:
+    """Normaliza las claves de los teasers (catalog_system usa 'Name', intelligent-search 'name')."""
+    if isinstance(obj, dict):
+        return {str(k).lower(): _lower_keys(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_lower_keys(v) for v in obj]
+    return obj
+
+
+def best_offer_price(co: dict) -> tuple[float, str]:
+    """Menor precio de una oferta VTEX: precio normal, spotPrice o promociones
+    (p. ej. descuento con tarjeta: PromotionTeasers con RestrictionsBins)."""
+    regular = _to_float(co.get("Price"))
+    best, label = regular, ""
+    spot = _to_float(co.get("spotPrice"))
+    if spot and spot < best:
+        best, label = spot, "precio contado"
+    teasers = co.get("PromotionTeasers") or co.get("teasers") or []
+    for t in _lower_keys(teasers):
+        cond = t.get("conditions") or {}
+        if (cond.get("minimumquantity") or 0) > 1:
+            continue  # exige llevar varias unidades
+        bins = any(p.get("name") == "RestrictionsBins" for p in cond.get("parameters") or [])
+        for eff in (t.get("effects") or {}).get("parameters") or []:
+            try:
+                val = float(str(eff.get("value")).replace(",", "."))
+            except ValueError:
+                continue
+            if eff.get("name") == "PercentualDiscount" and 0 < val < 100:
+                cand, tag = regular * (1 - val / 100), f"-{val:g}%"
+            elif eff.get("name") == "NominalDiscount" and 0 < val < regular:
+                cand, tag = regular - val, f"-${val:,.0f}".replace(",", ".")
+            else:
+                continue
+            cand = round(cand, 0)
+            if cand < best:
+                best, label = cand, f"con tarjeta {tag}" if bins else f"promoción {tag}"
+    return best, label
+
+
 def parse_vtex_product(store: str, product: dict, base_url: str,
                        sku: str | None = None) -> list[ProductSnapshot]:
     """Convierte un producto VTEX (catalog_system o intelligent-search) en snapshots.
@@ -89,26 +135,31 @@ def parse_vtex_product(store: str, product: dict, base_url: str,
         item_id = str(item.get("itemId") or "")
         if sku and item_id != str(sku):
             continue
-        name = item.get("nameComplete") or item.get("name") or name_p
-        if name_p and len(name_p) > len(name):
+        # productName es el nombre visible; con varios SKU se usa el del item
+        if name_p and len(product.get("items") or []) == 1:
             name = name_p
-        offer: dict = {}
-        sellers = item.get("sellers") or []
-        # prioriza vendedor con stock (el 1 suele ser la tienda misma)
-        for s in sorted(sellers, key=lambda s: str(s.get("sellerId")) != "1"):
-            co = s.get("commertialOffer") or s.get("commercialOffer") or {}
-            if co:
-                offer = co
-                if co.get("IsAvailable") or (co.get("AvailableQuantity") or 0) > 0:
-                    break
-        price = _to_float(offer.get("Price"))
-        list_price = _to_float(offer.get("ListPrice")) or _to_float(offer.get("PriceWithoutDiscount"))
-        available = bool(offer.get("IsAvailable", (offer.get("AvailableQuantity") or 0) > 0)) and price is not None
+        else:
+            name = item.get("name") or item.get("nameComplete") or name_p
+        best = None  # (precio, etiqueta, regular, list_price, disponible)
+        for seller in item.get("sellers") or []:
+            co = seller.get("commertialOffer") or seller.get("commercialOffer") or {}
+            regular = _to_float(co.get("Price"))
+            if regular is None:
+                continue
+            avail = bool(co.get("IsAvailable", (co.get("AvailableQuantity") or 0) > 0))
+            low, label = best_offer_price(co)
+            lp = _to_float(co.get("ListPrice")) or _to_float(co.get("PriceWithoutDiscount"))
+            cand = (low, label, regular, lp, avail)
+            # prefiere vendedores con stock; entre ellos, el menor precio
+            if best is None or (avail, -low) > (best[4], -best[0]):
+                best = cand
+        price, label, regular, list_price, available = best or (None, "", None, None, False)
         qty = quantity_from_vtex(item.get("measurementUnit"), _to_float(item.get("unitMultiplier")), name)
         out.append(ProductSnapshot(
             store=store, sku=item_id, product_id=str(product.get("productId") or ""),
             ean=str(item.get("ean") or "").strip(), name=name.strip(), brand=brand.strip(),
             url=link, price=price, list_price=list_price, available=available,
+            regular_price=regular, price_label=label,
             unit_qty=qty.amount if qty else None, unit=qty.unit if qty else None,
             price_per_unit=price_per_reference(price, qty),
         ))
@@ -147,15 +198,22 @@ def parse_jsonld(store: str, html: str, url: str, sku: str = "") -> Optional[Pro
     return None
 
 
+def _is_bot_wall(r: requests.Response) -> bool:
+    body = r.text[:4000].lower()
+    return ("cloudflare" in body or "cf-ray" in {k.lower() for k in r.headers}
+            or "captcha" in body or "access denied" in body)
+
+
 class VtexStore:
     def __init__(self, key: str, sales_channel: str | int | None = None,
                  delay: float = 1.5, timeout: float = 20, retries: int = 3,
-                 session: requests.Session | None = None):
+                 session: requests.Session | None = None, base_url: str | None = None):
         if key not in STORES:
             raise ValueError(f"Tienda desconocida: {key}")
         self.key = key
         self.display = STORES[key]["name"]
-        self.base = STORES[key]["base"]
+        self.base = (base_url or STORES[key]["base"]).rstrip("/")
+        self.blocked: str | None = None
         self.sc = sales_channel
         self.delay = delay
         self.timeout = timeout
@@ -166,6 +224,8 @@ class VtexStore:
 
     # ---- HTTP -----------------------------------------------------------------
     def _get(self, url: str, params: dict | None = None) -> requests.Response:
+        if self.blocked:
+            raise StoreBlocked(self.blocked)
         params = dict(params or {})
         if self.sc not in (None, ""):
             params.setdefault("sc", self.sc)
@@ -176,16 +236,23 @@ class VtexStore:
                 time.sleep(wait)
             try:
                 r = self.http.get(url, params=params, timeout=self.timeout)
-                self._last = time.monotonic()
-                if r.status_code in (429, 500, 502, 503, 504):
-                    raise StoreError(f"HTTP {r.status_code}")
-                # VTEX responde 206 en búsquedas paginadas
-                if r.status_code not in (200, 206):
-                    raise StoreError(f"HTTP {r.status_code} en {r.url}")
-                return r
-            except (requests.RequestException, StoreError) as exc:
+            except requests.RequestException as exc:
                 last_exc = exc
                 time.sleep(2 ** attempt)
+                continue
+            self._last = time.monotonic()
+            if r.status_code in (403, 503) and _is_bot_wall(r):
+                self.blocked = (f"{self.display} rechazó la consulta (HTTP {r.status_code}, "
+                                "protección anti-bots). Ver README: 'Si una tienda bloquea'.")
+                raise StoreBlocked(self.blocked)
+            if r.status_code in (429, 500, 502, 503, 504):
+                last_exc = StoreError(f"HTTP {r.status_code}")
+                time.sleep(2 ** attempt)
+                continue
+            # VTEX responde 206 en búsquedas paginadas
+            if r.status_code not in (200, 206):
+                raise StoreError(f"{self.display}: HTTP {r.status_code} en {r.url}")
+            return r
         raise StoreError(f"{self.display}: no se pudo consultar {url}: {last_exc}")
 
     def _json(self, url: str, params: dict | None = None) -> Any:
@@ -200,10 +267,14 @@ class VtexStore:
         """Búsqueda por texto libre. Prueba catalog_system y luego intelligent-search."""
         results: list[ProductSnapshot] = []
         try:
-            data = self._json(f"{self.base}/api/catalog_system/pub/products/search",
-                              {"ft": text, "_from": 0, "_to": max(0, n - 1)})
+            # VTEX exige espacios como %20 en ft (con '+' responde HTTP 400)
+            data = self._json(f"{self.base}/api/catalog_system/pub/products/search"
+                              f"?ft={quote(text.lower())}",
+                              {"_from": 0, "_to": max(0, min(n, 50) - 1)})
             for p in data or []:
                 results.extend(parse_vtex_product(self.key, p, self.base))
+        except StoreBlocked:
+            raise
         except StoreError as exc:
             log.warning("%s catalog_system falló (%s); probando intelligent-search", self.display, exc)
         if not results:
@@ -213,6 +284,8 @@ class VtexStore:
                     {"query": text, "count": n, "page": 1, "locale": "es-CO"})
                 for p in (data or {}).get("products", []):
                     results.extend(parse_vtex_product(self.key, p, self.base))
+            except StoreBlocked:
+                raise
             except StoreError as exc:
                 log.warning("%s intelligent-search falló: %s", self.display, exc)
         return results
@@ -226,6 +299,8 @@ class VtexStore:
                 snaps = parse_vtex_product(self.key, p, self.base, sku=sku)
                 if snaps:
                     return snaps[0]
+        except StoreBlocked:
+            raise
         except StoreError as exc:
             log.warning("%s: consulta por SKU %s falló: %s", self.display, sku, exc)
         if url:

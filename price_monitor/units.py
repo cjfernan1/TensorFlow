@@ -29,6 +29,8 @@ _PACK_RE = re.compile(
 _PACK_REV_RE = re.compile(
     rf"\b{_NUM}\s*({_UNIT_RE})\s*x\s*{_NUM}\s*(?:und|unid|unidades|un)?\b")
 _QTY_RE = re.compile(rf"\b{_NUM}\s*({_UNIT_RE})\b")
+# primero medidas (g/ml); las unidades sueltas ("6und") solo si no hay medida
+_MEASURE_RE = re.compile(rf"\b{_NUM}\s*({'|'.join(sorted((re.escape(k) for k, v in _UNIT_ALIASES.items() if v[0] != 'und'), key=len, reverse=True))})\b")
 # "x 6 und" sin otra medida
 _COUNT_RE = re.compile(r"\bx\s*(\d+)\s*(?:und|unid|unidades|un)?\b")
 
@@ -59,7 +61,9 @@ def strip_accents(text: str) -> str:
 
 
 def _prep(text: str) -> str:
-    return strip_accents(text.lower()).replace("×", "x")
+    t = strip_accents(text.lower()).replace("×", "x")
+    # "x200ml", "X1.5L" -> "x 200ml": separa la "x" pegada al número
+    return re.sub(r"\bx(?=\d)", "x ", t)
 
 
 def _num(s: str) -> float:
@@ -84,7 +88,7 @@ def parse_quantity(text: str) -> Optional[Quantity]:
     if m:
         q = _norm(_num(m.group(1)), m.group(2))
         return Quantity(round(q.amount * _num(m.group(3)), 4), q.unit)
-    m = _QTY_RE.search(t)
+    m = _MEASURE_RE.search(t) or _QTY_RE.search(t)
     if m:
         return _norm(_num(m.group(1)), m.group(2))
     m = _COUNT_RE.search(t)

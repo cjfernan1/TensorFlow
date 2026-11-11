@@ -18,8 +18,15 @@ SYNONYMS = {
     "cocacola": "coca cola", "yogurt": "yogur", "yoghurt": "yogur",
 }
 
+# Palabras de empaque que no distinguen un producto de otro
+GENERIC = {"botella", "pet", "bolsa", "caja", "lata", "tetrapack", "tetra", "pak", "frasco",
+           "vidrio", "sobre", "doypack", "paquete", "c", "u", "cu", "ml", "g", "gr", "grs", "kg",
+           "l", "lt", "litro", "litros", "unidades", "precio", "especial", "oferta", "nuevo",
+           "nueva", "presentacion", "familiar", "personal", "plastica", "pote", "vaso", "tarro"}
+EXTRA_PENALTY = 6    # puntos por palabra distintiva que no está en tu texto (máx. 18)
+
 HIGH_SCORE = 85      # puntaje mínimo para elegir sin preguntar
-MARGIN = 10          # ventaja mínima sobre la segunda opción
+MARGIN = 6           # ventaja mínima sobre la segunda opción
 MIN_SCORE = 45       # por debajo se descarta el candidato
 QTY_TOLERANCE = 0.05
 
@@ -68,6 +75,12 @@ def score_candidate(intent: Intent, snap: ProductSnapshot) -> Optional[Scored]:
         coverage = sum(_covered(t, cand_tokens) for t in intent.keywords) / len(intent.keywords)
     tsr = fuzz.token_set_ratio(" ".join(intent.keywords), " ".join(cand_tokens)) / 100
     name_pts = 60 * (0.6 * coverage + 0.4 * tsr)
+    # palabras distintivas del candidato que no pediste (p. ej. "go", "griego", "fresa")
+    brand_set = set(normalize(snap.brand))
+    extra = {t for t in normalize(remove_quantity(snap.name))
+             if t not in GENERIC and t not in brand_set and not any(ch.isdigit() for ch in t)
+             and not _covered(t, intent.keywords)}
+    name_pts -= min(3, len(extra)) * EXTRA_PENALTY
 
     brand_tokens = normalize(snap.brand)
     if brand_tokens and all(_covered(b, intent.keywords) for b in brand_tokens):
@@ -113,11 +126,25 @@ class MatchResult:
     notes: list[str] = field(default_factory=list)
 
 
-def _clear_winner(ranked: list[Scored], chosen: Scored) -> bool:
+def _clear_winner(ranked: list[Scored], chosen: Scored, sized: bool = True) -> bool:
+    """Elección clara: buen puntaje y ventaja sobre la siguiente opción.
+
+    Si no indicaste tamaño (`sized=False`) y hay otra opción cercana con otra
+    presentación, se considera dudosa para que elijas tú.
+    """
     if chosen.score < HIGH_SCORE:
         return False
     others = [r for r in ranked if r.snap.sku != chosen.snap.sku]
-    return not others or chosen.score - others[0].score >= MARGIN
+    if not others:
+        return True
+    if not sized:
+        for o in others:
+            if chosen.score - o.score >= 15:
+                break
+            if not (o.snap.quantity and chosen.snap.quantity
+                    and o.snap.quantity.close_to(chosen.snap.quantity)):
+                return False
+    return chosen.score - others[0].score >= MARGIN
 
 
 def _pair_bonus(a: ProductSnapshot, b: ProductSnapshot) -> float:
@@ -132,6 +159,7 @@ def _pair_bonus(a: ProductSnapshot, b: ProductSnapshot) -> float:
 
 def match(intent: Intent, results: dict[str, list[ProductSnapshot]]) -> MatchResult:
     ranked = {store: rank(intent, snaps) for store, snaps in results.items()}
+    sized = intent.quantity is not None
     stores = list(ranked)
     chosen: dict[str, Optional[Scored]] = {s: None for s in stores}
     notes: list[str] = []
@@ -144,7 +172,7 @@ def match(intent: Intent, results: dict[str, list[ProductSnapshot]]) -> MatchRes
         s = found[0]
         chosen[s] = ranked[s][0]
         notes.append(f"solo se encontró en {s}")
-        return MatchResult(intent, chosen, ranked, _clear_winner(ranked[s], chosen[s]),
+        return MatchResult(intent, chosen, ranked, _clear_winner(ranked[s], chosen[s], sized),
                            "mejor-puntaje", notes)
 
     a, b = found[0], found[1]
@@ -165,7 +193,7 @@ def match(intent: Intent, results: dict[str, list[ProductSnapshot]]) -> MatchRes
         # Seguro si el par por EAN está entre lo mejor puntuado en su tienda
         confident = (ra.score >= HIGH_SCORE - 10 and rb.score >= HIGH_SCORE - 10
                      and (ra.score + rb.score) / 2 >= top - MARGIN
-                     and (_clear_winner(ranked[a], ra) or _clear_winner(ranked[b], rb)
+                     and (_clear_winner(ranked[a], ra, sized) or _clear_winner(ranked[b], rb, sized)
                           or intent.quantity is not None))
         return MatchResult(intent, chosen, ranked, confident, "ean", notes)
 
@@ -184,7 +212,7 @@ def match(intent: Intent, results: dict[str, list[ProductSnapshot]]) -> MatchRes
     if not same_qty:
         notes.append("presentaciones distintas: se compara por precio por unidad")
     method = "marca+presentacion" if same_brand and same_qty else "mejor-puntaje"
-    confident = (_clear_winner(ranked[a], ra) and _clear_winner(ranked[b], rb)
+    confident = (_clear_winner(ranked[a], ra, sized) and _clear_winner(ranked[b], rb, sized)
                  and same_brand and same_qty)
     return MatchResult(intent, chosen, ranked, confident, method, notes)
 

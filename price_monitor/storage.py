@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS price_history (
     unit_qty       REAL,
     unit           TEXT,
     price_per_unit REAL,
-    ts             TEXT NOT NULL
+    ts             TEXT NOT NULL,
+    regular_price  REAL,
+    price_label    TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_hist ON price_history(query, store, ts);
 CREATE TABLE IF NOT EXISTS alerts_sent (
@@ -62,6 +64,14 @@ class Storage:
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self):
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(price_history)")}
+        for col, typ in (("regular_price", "REAL"), ("price_label", "TEXT")):
+            if col not in cols:
+                self.db.execute(f"ALTER TABLE price_history ADD COLUMN {col} {typ}")
+        self.db.commit()
 
     def close(self):
         self.db.close()
@@ -109,11 +119,11 @@ class Storage:
     def add_price(self, query: str, snap: ProductSnapshot):
         self.db.execute(
             """INSERT INTO price_history (query, store, sku, ean, name, brand, url, price,
-               list_price, available, unit_qty, unit, price_per_unit, ts)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               list_price, available, unit_qty, unit, price_per_unit, ts, regular_price, price_label)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (query, snap.store, snap.sku, snap.ean, snap.name, snap.brand, snap.url,
              snap.price, snap.list_price, int(snap.available), snap.unit_qty, snap.unit,
-             snap.price_per_unit, snap.timestamp))
+             snap.price_per_unit, snap.timestamp, snap.regular_price, snap.price_label))
         self.db.commit()
 
     def last_price(self, query: str, store: str, sku: str) -> Optional[sqlite3.Row]:

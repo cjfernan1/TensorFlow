@@ -1,0 +1,161 @@
+[
+ {
+  "productId": "13740",
+  "productName": "Malta Pony Malta Botella Pet X1.5L",
+  "brand": "PONY MALTA",
+  "linkText": "malta-pony-malta-botella-pet-x6-unidades-x330ml",
+  "link": "https://www.jumbocolombia.com/malta-pony-malta-botella-pet-x6-unidades-x330ml/p",
+  "items": [
+   {
+    "itemId": "13740",
+    "name": "Malta Pony Malta Botella Pet X1.5L",
+    "nameComplete": "Malta Pony Malta Botella Pet X1.5L",
+    "ean": "7702004013514",
+    "measurementUnit": "un",
+    "unitMultiplier": 1.0,
+    "sellers": [
+     {
+      "sellerId": "1",
+      "sellerName": "Cencosud - Colombia",
+      "commertialOffer": {
+       "Price": 6350.0,
+       "ListPrice": 6350.0,
+       "PriceWithoutDiscount": 6350.0,
+       "AvailableQuantity": 726,
+       "IsAvailable": true,
+       "PromotionTeasers": [
+        {
+         "Name": "J. INT COD 20 MERCADO SDPC182424 1 F",
+         "GeneralValues": {},
+         "Conditions": {
+          "MinimumQuantity": 0,
+          "Parameters": [
+           {
+            "Name": "RestrictionsBins",
+            "Value": "870055,590712,529448,423629,425819,425949"
+           }
+          ]
+         },
+         "Effects": {
+          "Parameters": [
+           {
+            "Name": "PercentualDiscount",
+            "Value": "20"
+           }
+          ]
+         }
+        }
+       ]
+      }
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "productId": "13744",
+  "productName": "Malta Pony Malta Botella Pet X1L",
+  "brand": "PONY MALTA",
+  "linkText": "malta-pony-malta-botella-pet-x1l",
+  "link": "https://www.jumbocolombia.com/malta-pony-malta-botella-pet-x1l/p",
+  "items": [
+   {
+    "itemId": "13744",
+    "name": "Malta Pony Malta Botella Pet X1L",
+    "nameComplete": "Malta Pony Malta Botella Pet X1L",
+    "ean": "7702004013842",
+    "measurementUnit": "un",
+    "unitMultiplier": 1.0,
+    "sellers": [
+     {
+      "sellerId": "1",
+      "sellerName": "Cencosud - Colombia",
+      "commertialOffer": {
+       "Price": 4390.0,
+       "ListPrice": 4390.0,
+       "PriceWithoutDiscount": 4390.0,
+       "AvailableQuantity": 1024,
+       "IsAvailable": true,
+       "PromotionTeasers": [
+        {
+         "Name": "J. INT COD 20 MERCADO SDPC182424 1 F",
+         "GeneralValues": {},
+         "Conditions": {
+          "MinimumQuantity": 0,
+          "Parameters": [
+           {
+            "Name": "RestrictionsBins",
+            "Value": "870055,590712,529448,423629,425819,425949"
+           }
+          ]
+         },
+         "Effects": {
+          "Parameters": [
+           {
+            "Name": "PercentualDiscount",
+            "Value": "20"
+           }
+          ]
+         }
+        }
+       ]
+      }
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "productId": "318836",
+  "productName": "Malta Pony Malta Go Botella Pet 1000ml x1",
+  "brand": "PONY MALTA",
+  "linkText": "malta-pony-malta-go-botella-pet-1000ml-x1",
+  "link": "https://www.jumbocolombia.com/malta-pony-malta-go-botella-pet-1000ml-x1/p",
+  "items": [
+   {
+    "itemId": "318836",
+    "name": "Malta Pony Malta Go Botella Pet 1000ml x1",
+    "nameComplete": "Malta Pony Malta Go Botella Pet 1000ml x1",
+    "ean": "7702004025753",
+    "measurementUnit": "un",
+    "unitMultiplier": 1.0,
+    "sellers": [
+     {
+      "sellerId": "1",
+      "sellerName": "Cencosud - Colombia",
+      "commertialOffer": {
+       "Price": 4090.0,
+       "ListPrice": 4090.0,
+       "PriceWithoutDiscount": 4090.0,
+       "AvailableQuantity": 196,
+       "IsAvailable": true,
+       "PromotionTeasers": [
+        {
+         "Name": "J. INT COD 20 MERCADO SDPC182424 1 F",
+         "GeneralValues": {},
+         "Conditions": {
+          "MinimumQuantity": 0,
+          "Parameters": [
+           {
+            "Name": "RestrictionsBins",
+            "Value": "870055,590712,529448,423629,425819,425949"
+           }
+          ]
+         },
+         "Effects": {
+          "Parameters": [
+           {
+            "Name": "PercentualDiscount",
+            "Value": "20"
+           }
+          ]
+         }
+        }
+       ]
+      }
+     }
+    ]
+   }
+  ]
+ }
+]

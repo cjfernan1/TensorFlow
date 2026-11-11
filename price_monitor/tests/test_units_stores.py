@@ -17,6 +17,12 @@ from helpers import vtex_product
     ("Huevos AA x 30 und", 30, "und"),
     ("Aceite 1 L", 1000, "ml"),
     ("Pony malta 1.5 lt", 1500, "ml"),
+    ("Malta Pony Malta Botella Pet X200ml", 200, "ml"),
+    ("Malta Pony Malta Botella Pet X1.5L", 1500, "ml"),
+    ("Malta Pony Malta Botella Pet X1L", 1000, "ml"),
+    ("Malta Pony Malta botella pet x30und x200ml c-u", 6000, "ml"),
+    ("Malta Pony Malta Botella Pet X6 Unidades X330ml", 1980, "ml"),
+    ("Malta PONY MALTA go x6und (1200 ml)", 1200, "ml"),
 ])
 def test_parse_quantity(text, amount, unit):
     assert parse_quantity(text) == Quantity(amount, unit)
@@ -48,7 +54,7 @@ def test_parse_vtex_product():
 
 def test_vtex_unit_multiplier_default_uses_name():
     p = vtex_product("1", "9", "Pony Malta 1 L", "Pony", 3500, mu="un", mult=1)
-    [s] = parse_vtex_product("jumbo", p, "https://www.tiendasjumbo.co")
+    [s] = parse_vtex_product("jumbo", p, "https://www.jumbocolombia.com")
     assert s.quantity == Quantity(1000, "ml")
 
 
@@ -67,3 +73,41 @@ def test_jsonld_fallback():
     s = parse_jsonld("exito", html, "https://www.exito.com/pony/p")
     assert s.price == 3490 and s.ean == "7702004" and s.brand == "Pony"
     assert s.price_per_unit == 3490
+
+
+def test_real_jumbo_card_price():
+    """Respuesta real de jumbocolombia.com (recortada): 'Paga $3.512' con tarjeta."""
+    import json
+    from pathlib import Path
+    data = json.loads((Path(__file__).parent / "fixtures" / "jumbo_pony_catalog.json")
+                      .read_text(encoding="utf-8"))
+    snaps = {s.name: s for p in data
+             for s in parse_vtex_product("jumbo", p, "https://www.jumbocolombia.com")}
+    s = snaps["Malta Pony Malta Botella Pet X1L"]
+    assert s.regular_price == 4390 and s.price == 3512
+    assert s.price_label == "con tarjeta -20%"
+    assert s.quantity == Quantity(1000, "ml") and s.price_per_unit == 3512
+    assert snaps["Malta Pony Malta Botella Pet X1.5L"].price == 5080
+
+
+def test_real_jumbo_match_prefers_plain_over_go():
+    import json
+    from pathlib import Path
+    from matcher import Intent, match
+    data = json.loads((Path(__file__).parent / "fixtures" / "jumbo_pony_catalog.json")
+                      .read_text(encoding="utf-8"))
+    snaps = [s for p in data for s in parse_vtex_product("jumbo", p, "https://www.jumbocolombia.com")]
+    m = match(Intent.from_text("pony malta 1 litro"), {"jumbo": snaps})
+    assert m.confident and m.chosen["jumbo"].snap.name == "Malta Pony Malta Botella Pet X1L"
+
+
+def test_best_offer_price_variants():
+    from stores import best_offer_price
+    # formato intelligent-search, compra mínima de 2 se ignora, descuento nominal
+    co = {"Price": 10000, "spotPrice": 9800, "teasers": [
+        {"name": "2x", "conditions": {"minimumQuantity": 2, "parameters": []},
+         "effects": {"parameters": [{"name": "PercentualDiscount", "value": "50"}]}},
+        {"name": "promo", "conditions": {"minimumQuantity": 0, "parameters": []},
+         "effects": {"parameters": [{"name": "NominalDiscount", "value": "1500"}]}}]}
+    assert best_offer_price(co) == (8500, "promoción -$1.500")
+    assert best_offer_price({"Price": 5000}) == (5000, "")

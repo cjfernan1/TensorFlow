@@ -26,6 +26,14 @@ def money(v: Optional[float]) -> str:
     return "—" if v is None else "$" + f"{v:,.0f}".replace(",", ".")
 
 
+def price_text(s) -> str:
+    """"$3.512 con tarjeta -20% (sin tarjeta $4.390)" o solo "$3.600"."""
+    txt = money(s.price)
+    if getattr(s, "price_label", "") and s.regular_price and s.regular_price != s.price:
+        txt += f" {s.price_label} (normal {money(s.regular_price)})"
+    return txt
+
+
 def _pct(new: float, old: float) -> float:
     return (old - new) / old * 100 if old else 0.0
 
@@ -55,7 +63,7 @@ def check_price_drop(query: str, snap: ProductSnapshot, db: Storage,
         alerts.append(Alert(
             key=f"bajada:{query}:{snap.store}:{snap.price:.0f}",
             title=f"⬇ {query} bajó en {store}",
-            message=f"{snap.name} ({snap.presentation}): {money(snap.price)}. " + " · ".join(refs),
+            message=f"{snap.name} ({snap.presentation}): {price_text(snap)}. " + " · ".join(refs),
             url=snap.url, kind="bajada"))
     # regreso de disponibilidad
     if snap.available and last["available"] == 0:
@@ -75,7 +83,7 @@ def check_discount(query: str, snap: ProductSnapshot, min_pct: float) -> list[Al
     return [Alert(
         key=f"descuento:{query}:{snap.store}:{snap.price:.0f}",
         title=f"🏷 {query}: {pct:.0f}% de descuento en {STORES[snap.store]['name']}",
-        message=f"{snap.name}: {money(snap.price)} (antes {money(snap.list_price)})",
+        message=f"{snap.name}: {price_text(snap)} (antes {money(snap.list_price)})",
         url=snap.url, kind="descuento")]
 
 
@@ -102,8 +110,8 @@ def check_cross_store(query: str, snaps: dict[str, ProductSnapshot],
     if diff < threshold_pct:
         return []
     same_pres = cheap.quantity and exp.quantity and cheap.quantity.close_to(exp.quantity)
-    detail = (f"{STORES[cheap.store]['name']}: {money(cheap.price)} ({cheap.presentation}, {money(cheap.price_per_unit)}{per})"
-              f" vs {STORES[exp.store]['name']}: {money(exp.price)} ({exp.presentation}, {money(exp.price_per_unit)}{per})")
+    detail = (f"{STORES[cheap.store]['name']}: {price_text(cheap)} ({cheap.presentation}, {money(cheap.price_per_unit)}{per})"
+              f" vs {STORES[exp.store]['name']}: {price_text(exp)} ({exp.presentation}, {money(exp.price_per_unit)}{per})")
     if not same_pres:
         detail += " · presentaciones distintas"
     return [Alert(
