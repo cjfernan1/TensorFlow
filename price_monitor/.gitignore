@@ -1,0 +1,5 @@
+precios.db
+monitor.log
+productos.csv
+__pycache__/
+.pytest_cache/

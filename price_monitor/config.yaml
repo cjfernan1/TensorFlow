@@ -1,0 +1,30 @@
+# Enlace de la hoja de Google Sheets (compartida como "Cualquier persona con el enlace: lector").
+# Sirve el enlace normal (https://docs.google.com/spreadsheets/d/<ID>/edit#gid=0);
+# el script lo convierte a CSV. Si se deja vacío, se usa productos.csv local.
+sheet_csv_url: ""
+sheet_local_csv: productos.csv
+
+db_path: precios.db
+log_path: monitor.log
+
+stores:
+  exito:
+    enabled: true
+    sales_channel: ""   # canal de venta VTEX (sc); vacío = el predeterminado
+  jumbo:
+    enabled: true
+    sales_channel: ""
+
+request_delay_seconds: 1.5   # pausa entre peticiones a una misma tienda
+search_results: 20           # candidatos por búsqueda
+
+thresholds:
+  drop_pct: 10          # % de bajada vs última consulta o promedio para alertar
+  cross_store_pct: 15   # % de diferencia de precio por unidad entre tiendas
+  discount_pct: 25      # % de descuento (Price vs ListPrice) para alerta informativa
+  average_days: 30      # ventana del promedio
+  cooldown_hours: 24    # no repetir la misma alerta antes de este tiempo
+
+notifications:
+  enabled: true
+  discounts: false      # alerta informativa de descuentos publicados por la tienda
