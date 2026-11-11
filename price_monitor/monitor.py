@@ -23,7 +23,7 @@ import alerts as al
 from matcher import Intent, MatchResult, Scored, match, search_with_fallback
 from storage import Storage
 from stores import STORES, ProductSnapshot, VtexStore
-from units import Quantity, price_per_reference, reference_label
+from units import Quantity, price_per_reference, reference_label, strip_accents
 
 HERE = Path(__file__).resolve().parent
 ACTIVE = ("auto", "confirmado")
@@ -80,49 +80,121 @@ def to_csv_url(url: str) -> str:
     return url
 
 
-def parse_sheet(text: str) -> list[dict]:
-    """Columnas: producto (obligatoria), umbral_bajada (opcional), activo (opcional)."""
-    reader = csv.DictReader(io.StringIO(text.lstrip("﻿")))
-    rows = []
-    for raw in reader:
-        r = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
-        name = r.get("producto") or r.get("nombre") or r.get("product") or ""
-        if not name:
+NAME_KEYS = ("producto", "nombre", "product", "articulo", "item", "descripcion")
+OFF_VALUES = ("no", "n", "false", "0", "falso", "x", "inactivo")
+
+
+def _key(h: str) -> str:
+    return strip_accents((h or "").strip().lower())
+
+
+def _rows_of(text: str) -> list[list[str]]:
+    text = text.lstrip("﻿")
+    first = next((ln for ln in text.splitlines() if ln.strip()), "")
+    # Excel en español guarda CSV con ';'
+    delim = max([",", ";", "\t"], key=first.count) if first else ","
+    return [[c.strip() for c in row] for row in csv.reader(io.StringIO(text), delimiter=delim)]
+
+
+def parse_sheet(text: str, info: dict | None = None) -> list[dict]:
+    """Columna de producto (obligatoria), umbral de bajada y activo (opcionales).
+
+    Reconoce encabezados como "Producto", "Productos", "Nombre del producto"...;
+    salta filas de título; si no reconoce ninguno, usa la primera columna.
+    `info` (opcional) recibe datos de diagnóstico.
+    """
+    info = info if info is not None else {}
+    table = [r for r in _rows_of(text) if any(r)]
+    info.update(lines=len(table), headers=table[0] if table else [], name_col=None, guessed=False)
+    if not table:
+        return []
+
+    header_idx, name_col = None, None
+    for i, row in enumerate(table[:5]):
+        for j, h in enumerate(row):
+            if any(k in _key(h) for k in NAME_KEYS):
+                header_idx, name_col = i, j
+                break
+        if header_idx is not None:
+            break
+    if header_idx is None:
+        # sin encabezado reconocible: primera columna con texto, primera fila como encabezado
+        header_idx = 0
+        name_col = next((j for j, h in enumerate(table[0]) if h), 0)
+        info["guessed"] = True
+    headers = [_key(h) for h in table[header_idx]]
+    info.update(headers=table[header_idx], name_col=table[header_idx][name_col] if table[header_idx] else "")
+    thr_col = next((j for j, h in enumerate(headers) if "umbral" in h or "bajada" in h), None)
+    act_col = next((j for j, h in enumerate(headers) if "activo" in h), None)
+
+    def cell(row, j):
+        return row[j] if j is not None and j < len(row) else ""
+
+    out, seen = [], set()
+    for row in table[header_idx + 1:]:
+        name = " ".join(cell(row, name_col).split())
+        if not name or name.lower() in seen:
             continue
-        active = r.get("activo", "")
-        if active.lower() in ("no", "n", "false", "0", "falso", "x"):
+        if _key(cell(row, act_col)) in OFF_VALUES:
             continue
         thr = None
-        for key in ("umbral_bajada", "umbral_bajada_%", "umbral", "umbral_%"):
-            if r.get(key):
-                try:
-                    thr = float(r[key].replace("%", "").replace(",", "."))
-                except ValueError:
-                    pass
-                break
-        rows.append({"producto": " ".join(name.split()), "umbral": thr})
-    # sin duplicados, conservando el orden
-    seen, out = set(), []
-    for r in rows:
-        if r["producto"].lower() not in seen:
-            seen.add(r["producto"].lower())
-            out.append(r)
+        raw_thr = cell(row, thr_col).replace("%", "").replace(",", ".").strip()
+        if raw_thr:
+            try:
+                thr = float(raw_thr)
+            except ValueError:
+                pass
+        seen.add(name.lower())
+        out.append({"producto": name, "umbral": thr})
     return out
+
+
+def _decode(data: bytes) -> str:
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("cp1252")  # CSV guardado con Excel en Windows
 
 
 def read_sheet(cfg: dict) -> list[dict]:
     url = (cfg.get("sheet_csv_url") or "").strip()
     if url:
-        r = requests.get(to_csv_url(url), timeout=30)
+        source = to_csv_url(url)
+        r = requests.get(source, timeout=30)
+        if r.status_code in (401, 403, 404):
+            raise SystemExit(f"Hoja: HTTP {r.status_code} al leer {source}\n"
+                             "Revisa el enlace y compártela como 'Cualquier persona con el enlace: Lector'.")
         r.raise_for_status()
-        if "text/html" in r.headers.get("Content-Type", ""):
-            raise SystemExit("La hoja no es pública: compártela como 'Cualquier persona con el enlace'.")
-        r.encoding = "utf-8"
-        return parse_sheet(r.text)
-    local = _resolve(cfg.get("sheet_local_csv") or "productos.csv")
-    if local.exists():
-        return parse_sheet(local.read_text(encoding="utf-8"))
-    raise SystemExit("Configura 'sheet_csv_url' en config.yaml (o crea productos.csv).")
+        text = _decode(r.content)
+        if "text/html" in r.headers.get("Content-Type", "") or text.lstrip().lower().startswith(("<!doctype", "<html")):
+            raise SystemExit("Hoja: Google devolvió una página web en lugar del CSV.\n"
+                             "La hoja no es pública: Compartir → Acceso general → "
+                             "'Cualquier persona con el enlace' (Lector).")
+    else:
+        local = _resolve(cfg.get("sheet_local_csv") or "productos.csv")
+        if not local.exists():
+            raise SystemExit("Configura 'sheet_csv_url' en config.yaml (o crea productos.csv).")
+        source = str(local)
+        text = _decode(local.read_bytes())
+
+    info: dict = {}
+    rows = parse_sheet(text, info)
+    print(f"Hoja: {source} → {len(rows)} producto(s) leído(s)")
+    if info.get("guessed") and rows:
+        print(f"  (no encontré una columna 'producto'; usé la columna '{info['name_col']}')")
+    if not rows:
+        print("  ⚠ No se leyó ningún producto.")
+        if not info.get("lines"):
+            print("  El CSV está vacío. Si la hoja tiene varias pestañas, copia el enlace "
+                  "con la pestaña correcta abierta (incluye '#gid=...').")
+        else:
+            print(f"  Encabezados encontrados: {info.get('headers')}")
+            print("  Esperaba una columna llamada 'producto' con un producto por fila, por ejemplo:")
+            print("    producto,umbral_bajada,activo\n    pony malta 1 litro,,si")
+            print("  Primeras líneas recibidas:")
+            for ln in text.lstrip("﻿").splitlines()[:3]:
+                print("   |", ln[:120])
+    return rows
 
 
 def build_stores(cfg: dict) -> dict[str, VtexStore]:
@@ -234,7 +306,13 @@ def cmd_match(cfg, db, stores, rows, reelegir: Optional[str] = None, inp=input) 
         st = resolve_product(r["producto"], stores, db, cfg["search_results"],
                              interactive=interactive or bool(reelegir), force=bool(reelegir), inp=inp)
         counts[st] = counts.get(st, 0) + 1
-    print("\nResumen:", ", ".join(f"{k}: {v}" for k, v in counts.items()) or "nada que hacer")
+    names = {"auto": "emparejados automáticamente", "confirmado": "confirmados por ti",
+             "pendiente": "pendientes", "no_encontrado": "no encontrados",
+             "ya_emparejado": "ya estaban emparejados"}
+    if not targets:
+        print("\nResumen: la hoja no tiene productos para emparejar (revisa el mensaje de arriba).")
+    else:
+        print("\nResumen:", ", ".join(f"{v} {names.get(k, k)}" for k, v in counts.items()))
     return counts
 
 
@@ -294,6 +372,9 @@ def cmd_run(cfg, db, stores, rows, notifier: al.Notifier, dry_run=False) -> list
 
 def cmd_report(db: Storage, rows: list[dict] | None):
     queries = [r["producto"] for r in rows] if rows else sorted({m["query"] for m in db.all_matches()})
+    if not queries:
+        print("No hay productos emparejados todavía; ejecuta 'python monitor.py match'.")
+        return
     for q in queries:
         ms = db.get_matches(q)
         print(f"\n■ {q}")

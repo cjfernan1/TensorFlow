@@ -115,3 +115,41 @@ def test_not_found_is_not_saved(tmp_path):
     stores = {"exito": FakeStore("exito", []), "jumbo": FakeStore("jumbo", [])}
     st = monitor.resolve_product("producto inexistente", stores, db, 20, interactive=False)
     assert st == "no_encontrado" and db.get_matches("producto inexistente") == {}
+
+
+def test_sheet_flexible_headers():
+    assert [r["producto"] for r in monitor.parse_sheet("Productos\npony malta 1 litro\n")] == \
+        ["pony malta 1 litro"]
+    rows = monitor.parse_sheet("Nombre del Artículo;Umbral de bajada %;Activo\n"
+                               "queso mozarella alpina;15;Sí\narroz;;No\n")
+    assert rows == [{"producto": "queso mozarella alpina", "umbral": 15.0}]
+
+
+def test_sheet_title_row_and_guess():
+    text = "Mi lista de mercado,,\n,,\nProducto,Activo,\npony malta 1 litro,si,\n"
+    assert [r["producto"] for r in monitor.parse_sheet(text)] == ["pony malta 1 litro"]
+    info = {}
+    rows = monitor.parse_sheet("Cosas\npony malta\narroz diana\n", info)
+    assert [r["producto"] for r in rows] == ["pony malta", "arroz diana"]
+    assert info["guessed"] is True
+
+
+def test_read_sheet_reports_zero_rows(tmp_path, capsys):
+    f = tmp_path / "productos.csv"
+    f.write_text("producto,activo\n,\n", encoding="utf-8")
+    assert monitor.read_sheet({"sheet_csv_url": "", "sheet_local_csv": str(f)}) == []
+    out = capsys.readouterr().out
+    assert "0 producto" in out and "No se leyó ningún producto" in out
+
+
+def test_read_sheet_cp1252(tmp_path, capsys):
+    f = tmp_path / "productos.csv"
+    f.write_bytes("Producto;Activo\nAzúcar Manuelita 1 kg;si\n".encode("cp1252"))
+    rows = monitor.read_sheet({"sheet_csv_url": "", "sheet_local_csv": str(f)})
+    assert rows[0]["producto"] == "Azúcar Manuelita 1 kg"
+    assert "1 producto(s)" in capsys.readouterr().out
+
+
+def test_report_empty(tmp_path, capsys):
+    monitor.cmd_report(Storage(str(tmp_path / "p.db")), [])
+    assert "No hay productos emparejados" in capsys.readouterr().out
